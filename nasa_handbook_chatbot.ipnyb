@@ -1,130 +1,214 @@
-# Clean install for LlamaParse + Gemini - avoids most Colab conflicts
-!pip install -q --no-deps \
-    llama-index \
-    llama-parse \
-    llama-index-llms-google-genai \
-    llama-index-embeddings-google \
-    chromadb
-!pip install -q llama-index-embeddings-huggingface
-# Install the core dependencies that were causing conflicts in a controlled way
-!pip install -q google-generativeai
-
-print("✅ Installation completed.")
-
-import os
-
-# ================== PUT YOUR KEYS HERE ==================
-
-
-os.environ["GOOGLE_API_KEY"] = "Enter your Gemini API key: "
-
-
-os.environ["LLAMA_CLOUD_API_KEY"] = "Enter your llama key: "
-
-print("✅ Both API keys have been set!")
-
-pdf_path = "nasa_handbook.pdf"
-if not os.path.exists(pdf_path):
-    !wget -q --show-progress "https://www.nasa.gov/wp-content/uploads/2018/09/nasa_systems_engineering_handbook_0.pdf" -O {pdf_path}
-
-from llama_parse import LlamaParse
-from llama_index.core import SimpleDirectoryReader
-
-parser = LlamaParse(
-    result_type="markdown",
-    parsing_instruction="This is a technical NASA Systems Engineering Handbook. Extract all numbered section headings, preserve hierarchy, extract tables with full context, include figure captions.",
-    use_vendor_multimodal_model=True,
-    vendor_multimodal_model="gemini-1.5-flash",
-    num_workers=2
-)
-
-file_extractor = {".pdf": parser}
-
-documents = SimpleDirectoryReader(
-    input_files=["nasa_handbook.pdf"],
-    file_extractor=file_extractor
-).load_data()
-
-print(len(documents))
-
-from llama_index.embeddings.huggingface import HuggingFaceEmbedding
-from llama_index.core import VectorStoreIndex
-
-# Free local embedding model - no Gemini needed for this part
-embed_model = HuggingFaceEmbedding(
-    model_name="BAAI/bge-small-en-v1.5",
-    embed_batch_size=32
-)
-
-index = VectorStoreIndex.from_documents(
-    documents,
-    embed_model=embed_model,
-    show_progress=True
-)
-
-print("Index built successfully")
-
-import asyncio
-import nest_asyncio
-from llama_index.llms.google_genai import GoogleGenAI
-from llama_index.core import get_response_synthesizer
-from llama_index.core.prompts import PromptTemplate
-
-# Fix for Colab event loop issue
-nest_asyncio.apply()
-
-# Re-create LLM and query_engine with Gemini
-llm = GoogleGenAI(model="gemini-2.5-flash", temperature=0.2)
-
-qa_template = PromptTemplate(
-"""You are an expert NASA Systems Engineering consultant answering from the official NASA Systems Engineering Handbook (SP-2016-6105 Rev2).
-
-Use ONLY the provided context.
-Combine information from different sections if the answer requires it.
-Expand acronyms the first time you use them (example: PDR = Preliminary Design Review).
-Respect tables and section numbers in your answer.
-Be precise and technical.
-At the end of the answer, always add a line that starts with "Sources:" and mention the relevant sections or pages.
-
-Context:
-{context_str}
-
-Question: {query_str}
-
-Answer:
-"""
-)
-
-response_synthesizer = get_response_synthesizer(
-    llm=llm,
-    response_mode="compact",
-    text_qa_template=qa_template
-)
-
-query_engine = index.as_query_engine(
-    response_synthesizer=response_synthesizer,
-    similarity_top_k=6
-)
-
-def ask(question):
-    print(f"\nQuestion: {question}")
-    try:
-        response = query_engine.query(question)
-        print(response)
-    except Exception as e:
-        print("Error while generating answer:", str(e))
-    print("\n" + "="*80)
-
-print("🚀 NASA Systems Engineering Handbook Chatbot is READY (using Gemini)!")
-print("Test questions:")
-print("- what is Product Realization Processes")
-print("- What are the entry criteria for PDR?")
-print("- Describe the Vee Model")
-print("- What should a verification plan include?")
-
-while True:
-    q = input("\nYour question (or type 'quit' to stop): ")
-    if q.lower() in ["quit", "exit", "q"]:
-        print("Chatbot stopped.")
-        break
-    ask(q)
+{
+ "cells": [
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "# NASA Systems Engineering Handbook Chatbot\n",
+    "\n",
+    "Clean installation of LlamaParse + Gemini with local embeddings."
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "# Clean install for LlamaParse + Gemini - avoids most Colab conflicts\n",
+    "!pip install -q --no-deps \\\n",
+    "    llama-index \\\n",
+    "    llama-parse \\\n",
+    "    llama-index-llms-google-genai \\\n",
+    "    llama-index-embeddings-google \\\n",
+    "    chromadb\n",
+    "!pip install -q llama-index-embeddings-huggingface\n",
+    "# Install the core dependencies that were causing conflicts in a controlled way\n",
+    "!pip install -q google-generativeai\n",
+    "print(\"✅ Installation completed.\")"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "import os\n",
+    "\n",
+    "# ================== PUT YOUR KEYS HERE ==================\n",
+    "os.environ[\"GOOGLE_API_KEY\"] = \"Enter your Gemini API key here\"\n",
+    "os.environ[\"LLAMA_CLOUD_API_KEY\"] = \"Enter your LlamaParse API key here\"\n",
+    "\n",
+    "print(\"✅ Both API keys have been set!\")"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "import os\n",
+    "from pathlib import Path\n",
+    "\n",
+    "pdf_path = \"nasa_handbook.pdf\"\n",
+    "\n",
+    "if not os.path.exists(pdf_path):\n",
+    "    print(\"Downloading NASA Systems Engineering Handbook...\")\n",
+    "    !wget -q --show-progress \"https://www.nasa.gov/wp-content/uploads/2018/09/nasa_systems_engineering_handbook_0.pdf\" -O {pdf_path}\n",
+    "    print(\"Download completed.\")\n",
+    "else:\n",
+    "    print(\"PDF already exists.\")"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "from llama_parse import LlamaParse\n",
+    "from llama_index.core import SimpleDirectoryReader\n",
+    "\n",
+    "parser = LlamaParse(\n",
+    "    result_type=\"markdown\",\n",
+    "    parsing_instruction=\"This is a technical NASA Systems Engineering Handbook. Extract all numbered section headings, preserve hierarchy, extract tables with full context, include figure captions.\",\n",
+    "    use_vendor_multimodal_model=True,\n",
+    "    vendor_multimodal_model=\"gemini-1.5-flash\",\n",
+    "    num_workers=2\n",
+    ")\n",
+    "\n",
+    "file_extractor = {'.pdf': parser}\n",
+    "\n",
+    "documents = SimpleDirectoryReader(\n",
+    "    input_files=[\"nasa_handbook.pdf\"],\n",
+    "    file_extractor=file_extractor\n",
+    ").load_data()\n",
+    "\n",
+    "print(f\"✅ Loaded {len(documents)} document chunks\")"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "from llama_index.embeddings.huggingface import HuggingFaceEmbedding\n",
+    "from llama_index.core import VectorStoreIndex\n",
+    "\n",
+    "# Free local embedding model\n",
+    "embed_model = HuggingFaceEmbedding(\n",
+    "    model_name=\"BAAI/bge-small-en-v1.5\",\n",
+    "    embed_batch_size=32\n",
+    ")\n",
+    "\n",
+    "index = VectorStoreIndex.from_documents(\n",
+    "    documents,\n",
+    "    embed_model=embed_model,\n",
+    "    show_progress=True\n",
+    ")\n",
+    "\n",
+    "print(\"✅ Vector index built successfully!\")"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "import asyncio\n",
+    "import nest_asyncio\n",
+    "from llama_index.llms.google_genai import GoogleGenAI\n",
+    "from llama_index.core import get_response_synthesizer\n",
+    "from llama_index.core.prompts import PromptTemplate\n",
+    "\n",
+    "# Fix for Colab event loop issue\n",
+    "nest_asyncio.apply()\n",
+    "\n",
+    "# Re-create LLM and query_engine with Gemini\n",
+    "llm = GoogleGenAI(model=\"gemini-1.5-flash\", temperature=0.2)  # Note: gemini-2.5-flash may not exist yet\n",
+    "\n",
+    "qa_template = PromptTemplate(\n",
+    "\"\"\"You are an expert NASA Systems Engineering consultant answering from the official NASA Systems Engineering Handbook (SP-2016-6105 Rev2).\n",
+    "Use ONLY the provided context.\n",
+    "Combine information from different sections if the answer requires it.\n",
+    "Expand acronyms the first time you use them (example: PDR = Preliminary Design Review).\n",
+    "Respect tables and section numbers in your answer.\n",
+    "Be precise and technical.\n",
+    "At the end of the answer, always add a line that starts with \"Sources:\" and mention the relevant sections or pages.\n",
+    "\n",
+    "Context:\n",
+    "{context_str}\n",
+    "\n",
+    "Question: {query_str}\n",
+    "Answer:\"\"\"\n",
+    ")\n",
+    "\n",
+    "response_synthesizer = get_response_synthesizer(\n",
+    "    llm=llm,\n",
+    "    response_mode=\"compact\",\n",
+    "    text_qa_template=qa_template\n",
+    ")\n",
+    "\n",
+    "query_engine = index.as_query_engine(\n",
+    "    response_synthesizer=response_synthesizer,\n",
+    "    similarity_top_k=6\n",
+    ")\n",
+    "\n",
+    "def ask(question):\n",
+    "    print(f\"\\n🔍 Question: {question}\")\n",
+    "    try:\n",
+    "        response = query_engine.query(question)\n",
+    "        print(response)\n",
+    "    except Exception as e:\n",
+    "        print(f\"❌ Error: {str(e)}\")\n",
+    "    print(\"\\n\" + \"=\"*80)\n",
+    "\n",
+    "print(\"🚀 NASA Systems Engineering Handbook Chatbot is READY!\")\n",
+    "print(\"You can now ask questions about the handbook.\")"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "# Test the chatbot\n",
+    "test_questions = [\n",
+    "    \"What is Product Realization Processes?\",\n",
+    "    \"What are the entry criteria for PDR?\",\n",
+    "    \"Describe the Vee Model\",\n",
+    "    \"What should a verification plan include?\"\n",
+    "]\n",
+    "\n",
+    "for q in test_questions:\n",
+    "    ask(q)"
+   ]
+  }
+ ],
+ "metadata": {
+  "kernelspec": {
+   "display_name": "Python 3",
+   "language": "python",
+   "name": "python3"
+  },
+  "language_info": {
+   "codemirror_mode": {
+    "name": "ipython",
+    "version": 3
+   },
+   "file_extension": ".py",
+   "mimetype": "text/x-python",
+   "name": "python",
+   "nbconvert_exporter": "python",
+   "pygments_lexer": "ipython3",
+   "version": "3.10.12"
+  }
+ },
+ "nbformat": 4,
+ "nbformat_minor": 4
+}
