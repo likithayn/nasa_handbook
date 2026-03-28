@@ -1,0 +1,202 @@
+{
+  "nbformat": 4,
+  "nbformat_minor": 0,
+  "metadata": {
+    "colab": {
+      "provenance": [],
+      "name": "nasa_se_chatbot.ipynb"
+    },
+    "kernelspec": {
+      "name": "python3",
+      "display_name": "Python 3"
+    },
+    "language_info": {
+      "name": "python"
+    }
+  },
+  "cells": [
+    {
+      "cell_type": "markdown",
+      "metadata": {},
+      "source": [
+        "# NASA Systems Engineering Handbook QA Chatbot\n",
+        "\n",
+        "Advanced RAG Chatbot for the 270-page NASA Systems Engineering Handbook (SP-2016-6105 Rev2)\n",
+        "\n",
+        "Handles complex technical manual challenges: nested sections, tables, cross-references, and acronyms."
+      ]
+    },
+    {
+      "cell_type": "code",
+      "execution_count": null,
+      "metadata": {},
+      "outputs": [],
+      "source": [
+        "# Cell 1: Install required packages\n",
+        "!pip install -q llama-index llama-parse llama-index-llms-google-genai llama-index-embeddings-huggingface nest_asyncio"
+      ]
+    },
+    {
+      "cell_type": "code",
+      "execution_count": null,
+      "metadata": {},
+      "outputs": [],
+      "source": [
+        "# Cell 2: Import libraries and set Gemini API key\n",
+        "import os\n",
+        "import getpass\n",
+        "import nest_asyncio\n",
+        "\n",
+        "nest_asyncio.apply()\n",
+        "\n",
+        "if \"GOOGLE_API_KEY\" not in os.environ:\n",
+        "    os.environ[\"GOOGLE_API_KEY\"] = getpass.getpass(\"Enter your Gemini API key: \")\n",
+        "\n",
+        "print(\"✅ API key set and nest_asyncio applied\")"
+      ]
+    },
+    {
+      "cell_type": "code",
+      "execution_count": null,
+      "metadata": {},
+      "outputs": [],
+      "source": [
+        "# Cell 3: Download the NASA Handbook\n",
+        "pdf_path = \"nasa_handbook.pdf\"\n",
+        "\n",
+        "if not os.path.exists(pdf_path):\n",
+        "    print(\"Downloading NASA Systems Engineering Handbook...\")\n",
+        "    !wget -q --show-progress \"https://www.nasa.gov/wp-content/uploads/2018/09/nasa_systems_engineering_handbook_0.pdf\" -O {pdf_path}\n",
+        "else:\n",
+        "    print(\"PDF already exists.\")\n",
+        "\n",
+        "print(f\"✅ File ready: {pdf_path}\")"
+      ]
+    },
+    {
+      "cell_type": "code",
+      "execution_count": null,
+      "metadata": {},
+      "outputs": [],
+      "source": [
+        "# Cell 4: Smart Parsing with LlamaParse\n",
+        "from llama_parse import LlamaParse\n",
+        "from llama_index.core import SimpleDirectoryReader\n",
+        "\n",
+        "parser = LlamaParse(\n",
+        "    result_type=\"markdown\",\n",
+        "    parsing_instruction=\"This is a technical NASA Systems Engineering Handbook. Extract all numbered section headings (e.g. 6.3.2.1), preserve hierarchy, extract tables with full context, include figure captions.\",\n",
+        "    use_vendor_multimodal_model=True,\n",
+        "    vendor_multimodal_model=\"gemini-1.5-flash\",\n",
+        "    num_workers=2\n",
+        ")\n",
+        "\n",
+        "file_extractor = {\".pdf\": parser}\n",
+        "\n",
+        "documents = SimpleDirectoryReader(\n",
+        "    input_files=[pdf_path],\n",
+        "    file_extractor=file_extractor\n",
+        ").load_data()\n",
+        "\n",
+        "print(f\"✅ Parsed into {len(documents)} structured documents\")"
+      ]
+    },
+    {
+      "cell_type": "code",
+      "execution_count": null,
+      "metadata": {},
+      "outputs": [],
+      "source": [
+        "# Cell 5: Build Vector Index with Local Embeddings\n",
+        "from llama_index.embeddings.huggingface import HuggingFaceEmbedding\n",
+        "from llama_index.core import VectorStoreIndex\n",
+        "\n",
+        "embed_model = HuggingFaceEmbedding(\n",
+        "    model_name=\"BAAI/bge-small-en-v1.5\",\n",
+        "    embed_batch_size=32\n",
+        ")\n",
+        "\n",
+        "index = VectorStoreIndex.from_documents(\n",
+        "    documents,\n",
+        "    embed_model=embed_model,\n",
+        "    show_progress=True\n",
+        ")\n",
+        "\n",
+        "print(\"✅ Vector index built successfully\")"
+      ]
+    },
+    {
+      "cell_type": "code",
+      "execution_count": null,
+      "metadata": {},
+      "outputs": [],
+      "source": [
+        "# Cell 6: Create Query Engine with Custom Prompt\n",
+        "from llama_index.llms.google_genai import GoogleGenAI\n",
+        "from llama_index.core import get_response_synthesizer\n",
+        "from llama_index.core.prompts import PromptTemplate\n",
+        "\n",
+        "llm = GoogleGenAI(model=\"gemini-2.5-flash\", temperature=0.2)\n",
+        "\n",
+        "qa_template = PromptTemplate(\n",
+        "\"\"\"You are an expert NASA Systems Engineering consultant answering from the official NASA Systems Engineering Handbook (SP-2016-6105 Rev2).\n",
+        "\n",
+        "Use ONLY the provided context.\n",
+        "Combine information from different sections if the answer requires it.\n",
+        "Expand acronyms the first time you use them (example: PDR = Preliminary Design Review).\n",
+        "Respect tables and section numbers in your answer.\n",
+        "Be precise and technical.\n",
+        "At the end of the answer, always add a line that starts with \"Sources:\" and mention the relevant sections or pages.\n",
+        "\n",
+        "Context:\n",
+        "{context_str}\n",
+        "\n",
+        "Question: {query_str}\n",
+        "\n",
+        "Answer:\n",
+        "\"\"\"\n",
+        ")\n",
+        "\n",
+        "response_synthesizer = get_response_synthesizer(\n",
+        "    llm=llm,\n",
+        "    response_mode=\"compact\",\n",
+        "    text_qa_template=qa_template\n",
+        ")\n",
+        "\n",
+        "query_engine = index.as_query_engine(\n",
+        "    response_synthesizer=response_synthesizer,\n",
+        "    similarity_top_k=6\n",
+        ")\n",
+        "\n",
+        "print(\"✅ Query engine created successfully\")"
+      ]
+    },
+    {
+      "cell_type": "code",
+      "execution_count": null,
+      "metadata": {},
+      "outputs": [],
+      "source": [
+        "# Cell 7: Interactive Chatbot\n",
+        "def ask(question):\n",
+        "    print(f\"\\nQuestion: {question}\")\n",
+        "    try:\n",
+        "        response = query_engine.query(question)\n",
+        "        print(response)\n",
+        "    except Exception as e:\n",
+        "        print(\"Error:\", str(e))\n",
+        "    print(\"\\n\" + \"=\"*80)\n",
+        "\n",
+        "print(\"🚀 NASA Systems Engineering Handbook Chatbot is READY!\")\n",
+        "print(\"Ask questions about the handbook (type 'quit' to stop)\")\n",
+        "\n",
+        "while True:\n",
+        "    q = input(\"\\nYour question: \")\n",
+        "    if q.lower() in [\"quit\", \"exit\", \"q\"]:\n",
+        "        print(\"Chatbot stopped.\")\n",
+        "        break\n",
+        "    ask(q)"
+      ]
+    }
+  ]
+}
